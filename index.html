@@ -1521,6 +1521,7 @@ html > body { padding: 1rem; }
   <p id="gs-input-help" class="text-small">数値を入力し、Enter または入力欄の外を押すと反映されます。入力範囲はスライダーと共通です。</p>
   <div id="gs-input-error" class="text-destructive" role="alert" hidden></div>
   <div id="gs-three"></div>
+  <p id="gs-probe-help" class="text-small">青い線・棒・点やオレンジの破線に触れると、その位置の値が表示されます。キーボードではグラフを選び、左右の矢印キーで値を確認できます。</p>
   <div class="gs-panels">
     <section><h3 id="gs-density-title">θ 固定：データ x の確率密度</h3><div id="gs-density"></div></section>
     <section><h3>x 固定：パラメータ θ の尤度</h3><div id="gs-likelihood"></div><p id="gs-peak-note" class="text-small" role="status" hidden></p></section>
@@ -1528,7 +1529,13 @@ html > body { padding: 1rem; }
   <div id="gs-value" class="text-small tabular-nums" aria-live="polite"></div>
   <p id="gs-note" class="text-small">曲面の高さは f(x | θ) です。尤度の高さは「θ が正しい確率」ではなく、この曲面もデータとパラメータの同時確率密度ではありません。連続値の確率は、データの範囲について密度を積分して求めます。</p>
 </div>
+<div id="gs-curve-tooltip" role="tooltip" hidden><span></span><strong></strong></div>
 <style>
+#gs-curve-tooltip{position:fixed;z-index:1000;pointer-events:none;box-sizing:border-box;width:max-content;max-width:calc(100vw - 12px);padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--background,#fff);color:var(--foreground,#111);box-shadow:0 2px 8px rgb(0 0 0 / .16);font:inherit;font-size:12px;line-height:1.5;font-variant-numeric:tabular-nums}
+#gs-curve-tooltip[hidden]{display:none}
+#gs-curve-tooltip span,#gs-curve-tooltip strong{display:block}
+#distribution-settings-slices .gs-probe-series > *{pointer-events:visiblePainted;cursor:crosshair}
+#distribution-settings-slices .gs-chart:focus-visible{outline:2px solid var(--foreground);outline-offset:2px}
 #distribution-settings-slices [hidden]{display:none!important}
 #distribution-settings-slices{max-width:1060px;margin:0 auto;padding:16px}
 #distribution-settings-slices .gs-panels{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
@@ -1623,6 +1630,87 @@ THIS SOFTWARE.
   s.append('line').attr('x1',12).attr('x2',36).attr('y1',44).attr('y2',44).attr('stroke','var(--viz-series-2)').attr('stroke-width',3).attr('stroke-dasharray','7 4');
   text(s,44,48,'破線：x を固定','start');
  }
+ const curveTip=document.getElementById('gs-curve-tooltip');
+ const probeFormat=d3.format('.6~g');
+ let activeGuide=null;
+ function hideCurveValue(){
+  if(activeGuide){
+   activeGuide.attr('display','none');
+   activeGuide.node().ownerSVGElement?.setAttribute('aria-describedby','gs-probe-help');
+   activeGuide=null;
+  }
+  curveTip.hidden=true;
+ }
+ function inspectCurve(s,series,density,x,y,values,at){
+  const color=density?'var(--viz-series-1)':'var(--viz-series-2)';
+  const guide=s.append('g').attr('class','gs-probe-guide').attr('display','none')
+   .attr('pointer-events','none').attr('aria-hidden','true');
+  const stem=guide.append('line').attr('y1',y(0)).attr('stroke',color)
+   .attr('stroke-opacity',.6).attr('stroke-dasharray','3 3');
+  const point=guide.append('circle').attr('r',5.5).attr('fill','none')
+   .attr('stroke',color).attr('stroke-width',2);
+  const horizontal=x.copy().clamp(true);
+  const discreteX=density&&model.discrete;
+  const blackX=x(at),blackY=y(model.f(observed,theta));
+  let position=at;
+
+  function show(value){
+   const dataX=density?value:observed, parameter=density?theta:value;
+   const height=model.f(dataX,parameter), px=x(value), py=y(height);
+   if(![px,py,height].every(Number.isFinite)){hideCurveValue();return;}
+   if(activeGuide&&activeGuide!==guide)hideCurveValue();
+   activeGuide=guide;position=value;
+   guide.attr('display',null);
+   stem.attr('x1',px).attr('x2',px).attr('y2',py);
+   point.attr('cx',px).attr('cy',py);
+
+   const en=root.lang==='en';
+   const label=density?(discreteX?(en?'Probability':'確率'):(en?'Density':'確率密度')):(en?'Likelihood':'尤度');
+   const dataText='x = '+probeFormat(dataX), paramText=model.symbol+' = '+probeFormat(parameter);
+   curveTip.firstElementChild.textContent=density?dataText+' · '+paramText:paramText+' · '+dataText;
+   curveTip.lastElementChild.textContent=label+' = '+probeFormat(height);
+   curveTip.hidden=false;
+
+   const anchor=point.node().getBoundingClientRect(), box=curveTip.getBoundingClientRect();
+   const viewport=document.documentElement, gap=8;
+   const left=anchor.right+gap+box.width<=viewport.clientWidth?anchor.right+gap:anchor.left-gap-box.width;
+   const top=anchor.top-gap-box.height>=gap?anchor.top-gap-box.height:anchor.bottom+gap;
+   curveTip.style.left=Math.max(4,Math.min(left,viewport.clientWidth-box.width-4))+'px';
+   curveTip.style.top=Math.max(4,Math.min(top,viewport.clientHeight-box.height-4))+'px';
+   s.attr('aria-describedby','gs-probe-help gs-curve-tooltip');
+  }
+
+  function leave(){if(activeGuide===guide)hideCurveValue();}
+  function fromPointer(event){
+   // Touch may keep its initial event target even after the finger moves.
+   const mark=event.pointerType==='touch'
+    ?document.elementFromPoint(event.clientX,event.clientY)
+    :event.target;
+   if(mark?.parentNode!==series.node()){leave();return;}
+   if(discreteX){show(d3.select(mark).datum());return;}
+   const [px,py]=d3.pointer(event,s.node());
+   show(Math.hypot(px-blackX,py-blackY)<=4?at:horizontal.invert(px));
+  }
+  s.attr('tabindex',0).attr('aria-describedby','gs-probe-help')
+   .on('pointerover.probe pointermove.probe pointerdown.probe',fromPointer)
+   .on('pointerleave.probe pointercancel.probe',leave)
+   .on('pointerup.probe',event=>{if(event.pointerType==='touch')leave();})
+   .on('blur.probe',leave)
+   .on('keydown.probe',event=>{
+    if(event.key!=='ArrowLeft'&&event.key!=='ArrowRight')return;
+    event.preventDefault();
+    const start=activeGuide===guide?position:at;
+    const index=event.key==='ArrowRight'?d3.bisectRight(values,start):d3.bisectLeft(values,start)-1;
+    show(values[Math.max(0,Math.min(index,values.length-1))]);
+   });
+ }
+ document.addEventListener('pointerdown',event=>{
+  if(!event.target.closest?.('.gs-probe-series'))hideCurveValue();
+ },true);
+ document.addEventListener('keydown',event=>{if(event.key==='Escape')hideCurveValue();});
+ window.addEventListener('scroll',hideCurveValue,{capture:true,passive:true});
+ root.querySelector('#gs-language').addEventListener('change',hideCurveValue);
+
  function panel(id,density,values){
   const {s,w,h}=init(id,245),left=64,right=18,top=18,bottom=52;
   const x=d3.scaleLinear().domain(density?xd:td).range([left+7,w-right-7]);
@@ -1633,17 +1721,29 @@ THIS SOFTWARE.
   s.append('g').attr('transform',`translate(${left},0)`).call(d3.axisLeft(y).ticks(3));
   text(s,(left+w-right)/2,h-12,density?'データ x':'パラメータ θ').attr('class','axis-title').attr('data-axis','x');
   text(s,17,(top+h-bottom)/2,density?(model.discrete?'確率':'確率密度'):'尤度').attr('transform',`rotate(-90,17,${(top+h-bottom)/2})`).attr('class','axis-title').attr('data-axis','y');
-  if(density&&model.discrete){xvals.forEach(v=>{s.append('line').attr('x1',x(v)).attr('x2',x(v)).attr('y1',y(0)).attr('y2',y(model.f(v,theta))).attr('stroke','var(--viz-series-1)').attr('stroke-width',2);s.append('circle').attr('cx',x(v)).attr('cy',y(model.f(v,theta))).attr('r',3).attr('fill','var(--viz-series-1)');});}else{
-  const curve=s.append('path').datum(values).attr('d',d3.line().x(v=>x(v)).y(v=>y(density?model.f(v,theta):model.f(observed,v)))).attr('fill','none').attr('stroke',density?'var(--viz-series-1)':'var(--viz-series-2)').attr('stroke-width',2.5);
-  if(!density)curve.attr('stroke-dasharray','7 4');}
+  const series=s.append('g').attr('class','gs-probe-series');
+  if(density&&model.discrete){
+   for(const value of values){
+    const px=x(value),py=y(model.f(value,theta));
+    series.append('line').datum(value).attr('x1',px).attr('x2',px).attr('y1',y(0)).attr('y2',py)
+     .attr('stroke','var(--viz-series-1)').attr('stroke-width',2);
+    series.append('circle').datum(value).attr('cx',px).attr('cy',py).attr('r',3).attr('fill','var(--viz-series-1)');
+   }
+  }else{
+   const curve=series.append('path').datum(values)
+    .attr('d',d3.line().x(v=>x(v)).y(v=>y(density?model.f(v,theta):model.f(observed,v))))
+    .attr('fill','none').attr('stroke',density?'var(--viz-series-1)':'var(--viz-series-2)').attr('stroke-width',2.5);
+   if(!density)curve.attr('stroke-dasharray','7 4');
+  }
   const at=density?observed:theta,height=model.f(observed,theta);
-  s.append('line').attr('x1',x(at)).attr('x2',x(at)).attr('y1',y(0)).attr('y2',y(height)).attr('stroke','var(--border)');
-  s.append('circle').attr('cx',x(at)).attr('cy',y(height)).attr('r',4).attr('fill','var(--foreground)');
-  s.append('circle').attr('cx',x(at)).attr('cy',y(height)).attr('r',18).attr('fill','transparent').attr('data-chart-hit','').attr('data-tooltip',`θ=${theta.toFixed(2)}, x=${observed.toFixed(2)}：${height.toFixed(4)}`);
+  s.append('line').attr('x1',x(at)).attr('x2',x(at)).attr('y1',y(0)).attr('y2',y(height)).attr('stroke','var(--border)').attr('pointer-events','none');
+  s.append('circle').attr('cx',x(at)).attr('cy',y(height)).attr('r',4).attr('fill','var(--foreground)').attr('pointer-events','none');
+  inspectCurve(s,series,density,x,y,values,at);
   s.selectAll('text').nodes().forEach(t=>t.getBBox());
  }
  function draw(){
   if(!model)return;
+  hideCurveValue();
   theta=+ti.value;observed=+xi.value;
   const peak=model.peakAt(observed);
   const values=likelihoodParameters(peak), message=peakNotice(peak);
@@ -1711,6 +1811,7 @@ THIS SOFTWARE.
  const root=document.getElementById('distribution-settings-slices'), picker=root.querySelector('#gs-language');
  const dictionary={"確率・確率密度と尤度：固定する方向の違い": "Probability, density and likelihood: two ways to read the graph", "同じ曲面を、2つの方向から見てみましょう。パラメータ θ を固定するとデータの確率（連続分布では確率密度）、観測値 x を固定するとパラメータの尤度になります。": "Explore the same function in two directions. Hold the parameter θ fixed to see probabilities (or probability densities for continuous data). Hold the observed value x fixed to see the likelihood as a function of θ.", "数値を入力し、Enter または入力欄の外を押すと反映されます。入力範囲はスライダーと共通です。": "Enter a number, then press Enter or click outside the field to apply it. Input limits match the sliders.", "高さは P(X=x | θ) です。整数のxの間にはデータがないので、滑らかな面でつながず、整数ごとに曲線を描いています。青い棒はθ固定の確率、オレンジの破線はx固定の尤度です。尤度はθの確率分布ではありません。データの範囲の確率は、その範囲にある棒の高さを足して求めます。": "The height is P(X=x | θ). Since x takes integer values, we draw a separate curve for each integer instead of joining them into a smooth surface. Blue stems show probabilities at a fixed θ; the orange dashed curve shows likelihood at a fixed x. Likelihood is not a probability distribution over θ. To find the probability of a range of data values, add the heights of the stems in that range.", "曲面の高さは f(x | θ) です。尤度はθが正しい確率ではなく、この曲面も同時確率密度ではありません。連続値の確率はデータの範囲について密度を積分して求めます。": "The surface height is f(x | θ). Likelihood is not the probability that θ is correct, and this surface is not a joint probability density. For continuous data, probabilities are obtained by integrating the density over a range of data values.", "有限の値を入力してください。率と標準偏差は正の値にしてください。描画できない場合は、極端に大きな値や小さな値を避けてください。": "Enter finite values. Rates and standard deviations must be positive. If the graph cannot be drawn, try less extreme values.", "成功確率は二項分布で0〜1、幾何分布で0より大きく1以下。試行回数は1〜100の整数、ポアソンの平均は0より大きく50以下にしてください。": "Use 0 ≤ p ≤ 1 for the binomial distribution and 0 < p ≤ 1 for the geometric distribution. The trial count must be an integer from 1 to 100. The initial Poisson mean must satisfy 0 < λ ≤ 50.", "離散分布の観測値 x は整数で入力してください。": "For a discrete distribution, enter an integer for the observed value x.", "数値を入力してください。": "Please enter a number.", "θ 固定：データ x の確率（確率質量関数）": "Fixed θ: probability mass function of x", "θ 固定：データ x の確率密度": "Fixed θ: probability density of x", "x 固定：パラメータ θ の尤度": "Fixed x: likelihood as a function of θ", "固定する θ の直接入力": "Enter the fixed parameter θ", "固定する観測値 x の直接入力": "Enter the fixed observed value x", "固定する観測値 x：": "Fixed observed value x:", "最初の成功確率 p（0〜1）": "Initial success probability p (0 to 1)", "最初の成功確率 p（0より大きく1以下）": "Initial success probability p (0 < p ≤ 1)", "最初の平均 λ（0より大きく50以下）": "Initial mean λ (0 < λ ≤ 50)", "固定する試行回数 N（1〜100の整数）": "Fixed trial count N (integer, 1–100)", "固定する形状 k（k > 0、この図では k ≥ 1）": "Fixed shape k (k > 0, graph limited to k ≥ 1)", "最初の率 λ（平均の逆数）": "Initial rate λ (reciprocal of the mean)", "最初の対数平均 μ": "Initial mean μ of ln X", "対数標準偏差 σ": "Standard deviation σ of ln X", "最初の平均 μ": "Initial mean μ", "最初の平均": "Initial mean", "最初の率 λ": "Initial rate λ", "この設定で表示": "Apply settings", "棒・点：θ を固定": "Stems / dots: fixed θ", "実線：θ を固定": "Solid line: fixed θ", "破線：x を固定": "Dashed line: fixed x", "指数分布 ／ θ は率 λ、平均は 1/λ": "Exponential / θ is the rate λ; mean = 1/λ", "ポアソン分布 ／ 一定区間での発生回数 x、平均は λ": "Poisson / x counts events in a fixed interval; mean = λ", "幾何分布 ／ 初めて成功するまでの試行回数 x=1,2,…（40回まで表示）、平均は 1/p": "Geometric / x = 1, 2, … counts trials up to and including the first success (showing up to 40); mean = 1/p", "表示した整数の確率の合計": "Sum of probabilities at displayed integers", "（範囲外は省略）": " (values outside the range are omitted)", "表示は定義域の一部": "Only part of the domain is shown", "交点の高さ：": "Height at intersection: ", "対数正規分布": "Lognormal", "正規分布": "Normal", "指数分布": "Exponential", "ガンマ分布": "Gamma", "二項分布（離散）": "Binomial (discrete)", "ポアソン分布（離散）": "Poisson (discrete)", "幾何分布（離散）": "Geometric (discrete)", "対数平均 μ": "Mean μ of ln X", "成功確率 p": "Success probability p", "標準偏差 σ": "Standard deviation σ", "平均 μ": "Mean μ", "平均 λ": "Mean λ", "率 λ": "Rate λ", "データ x": "Data x", "パラメータ θ": "Parameter θ", "確率密度": "Probability density", "確率": "Probability", "尤度": "Likelihood", "高さ": "Height", "分布": "Distribution"};
  Object.assign(dictionary, {
+  "青い線・棒・点やオレンジの破線に触れると、その位置の値が表示されます。キーボードではグラフを選び、左右の矢印キーで値を確認できます。": "Hover over or touch a blue curve, stem or point, or an orange dash, to read its value. With a keyboard, focus a graph and use the left and right arrow keys.",
   "ガンマ分布の形状 k は正の有限値です。この図で表示できる範囲は k ≥ 1 です。": "The gamma shape k must be positive and finite. This graph can display k ≥ 1.",
   "0 < k < 1 もガンマ分布として有効です。この場合、x が 0 に近づくと密度が限りなく大きくなるため、この図では k ≥ 1 を入力してください。": "Shapes between 0 and 1 are valid. Their density grows without bound as x approaches 0, so enter k ≥ 1 for this graph.",
   "x = 0 では、どの率 λ でも密度は 0 です。尤度はすべての λ で等しく、ピークを1つに定められません。": "At x = 0 the density is 0 for every rate λ. All rates have the same likelihood, so there is no unique peak.",
